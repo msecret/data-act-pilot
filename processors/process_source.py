@@ -177,38 +177,22 @@ def run():
     jp_merge['awarding_sub_tier_agency_name'] = 'Small Business Administration'
     jp_merge['awarding_sub_tier_agency_code'] = '73'
 
-
-    #reduce the joined data to fields needed for the data act schema
-    jp_merge = jp_merge.drop_duplicates()
-    data_act = jp_merge[[
+    #a list of the columns that should be in the final file
+    data_act_cols = [
         'po_headers_all.segment1', #award id
         'header.versionnum', #award modification
         'header.docnum',
         'header.verkey',
-        'po_lines_all.item_description', #award description
-        #'header.shortdescr', #award description
-        'header.awarddate', #action date
-        'docvendor.name', #Recipient name
-        'po_distributions_all.attribute10', #period of performance start date
-        #'header.startdate', #period of performance start date
-        'po_distributions_all.attribute11', #period of performance end date
-        #'header.enddate', #period of performance end date
-        'docvendor.duns', #awardee/recipient legal business DUNS
-        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
-        'docvendor.address1', #awardee/recipient legal business street address line 1
-        'docvendor.address2', #awardee/recipient legal busines street address line 2
-        'docvendor.address3', #awardee/recipient legal business street address line 3
-        'docvendor.city', #awardee/recipient legal business city
-        'docvendor.state', #awardee/recipient state
-        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
         'header.amount', #current total value of award/potential total value of award
         'header.awardtype', #type of award
-        'faadsciv.assistancetranstype', #type of transaction code
         'header.primarysiccode', #naics code
+        'header.awarddate', #action date
+        'header.issuingdocaddresskey', #awarding office code
         'grantheader.sba1222countyname', #recipient county name
         'grantheader.sba1222countycode', #recipient county code
         'grantheader.recipientcountrycode', #awardee/recipient legal business country code
         'grantheader.recipientcountryname', #awardee/recipient legal business country name
+        'grantheader.sba1222congdistno', #place of performance congressional district
         'grantheader.sba1222personalservicenf', #used for non-fed funding amt calculation
         'grantheader.sba1222fringebenefitsnf', #used for non-fed funding amt calculation
         'grantheader.sba1222consultantsnf', #used for non-fed funding amt calculation
@@ -219,27 +203,38 @@ def run():
         'grantheader.sba1222othernf', #used for non-fed funding amt calculation
         'grantheader.sba1222indcostnf', #used for non-fed funding amt calculation
         'grantheader.sba1222othercostnf', #used for non-fed funding amt calculation
-        #'fv_treasury_symbols.treasury_symbol', #TAS
-        'itemacct.tas#', #TAS
+        'po_lines_all.item_description', #award description
         'po_lines_all.quantity',
         'po_lines_all.unit_price',
+        'po_distributions_all.attribute10', #period of performance start date
+        'po_distributions_all.attribute11', #period of performance end date
+        'po_distributions_all.quantity_billed', #outlay
+        'docvendor.name', #Recipient name
+        'docvendor.duns', #awardee/recipient legal business DUNS
+        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
+        'docvendor.address1', #awardee/recipient legal business street address line 1
+        'docvendor.address2', #awardee/recipient legal busines street address line 2
+        'docvendor.address3', #awardee/recipient legal business street address line 3
+        'docvendor.city', #awardee/recipient legal business city
+        'docvendor.state', #awardee/recipient state
+        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
+        'docaddr.name', #awarding office name
+        #'fv_treasury_symbols.treasury_symbol', #TAS
         'funding_agency_name', #funding agency name
         'funding_agency_code', #funding agency code
         'funding_sub_tier_agency_name', #funding sub-tier agency name
         'funding_sub_tier_agency_code', #funding sub-tier agency code
         'po_distributions_all.attribute_category', #type of award code
         'header.obligatedamt', #amount of ba appropriated; obligation
-        'po_distributions_all.quantity_billed', #outlay
         'gl_code_combinations.segment3', #funding office name
-        'itemacct.acctfield3', #funding office name and funding office code
-        'gl_code_combinations.segment5', #object class woo!
-        #'itemacct.acctfield5', #object class
-        #'gl_code_combinations.code_combination_id', #appropriations account
-        'itemacct.acctfield6', #appropriations account
         'gl_code_combinations.segment4', #program activity
+        'gl_code_combinations.segment5', #object class woo!
+        'itemacct.acctfield3', #funding office name and funding office code
+        'itemacct.acctfield6', #appropriations account
+        'itemacct.tas#', #TAS
         #'itemacct.acctfield4', #program activity
-        'grantheader.sba1222congdistno', #place of performance congressional district
         'faadsciv.recordtype', #record type
+        'faadsciv.assistancetranstype', #type of transaction code
         'faadsciv.countycityname', #primary place of performance county name/primary place of performance city
         'faadsciv.countycitycode', #primary place of performance county code
         'faadsciv.principalstatecode', #primary place of performance state code
@@ -249,8 +244,6 @@ def run():
         'faadsciv.placeofperfcountryname', #primary location of performance country name
         'faadsciv.cfdaprogramnumber', #cfda program number
         'faadsciv.cfdaprogramtitle', #cfda program title
-        'docaddr.name', #awarding office name
-        'header.issuingdocaddresskey', #awarding office code
         'faadsciv.recipienttype', #recipient type
         'funding_agency_name',
         'funding_agency_code',
@@ -259,13 +252,111 @@ def run():
         'awarding_agency_name',
         'awarding_agency_code',
         'awarding_sub_tier_agency_name',
-        'awarding_sub_tier_agency_code'
-        ]]
+        'awarding_sub_tier_agency_code',
+        #add some keys to the file for reference
+        'po_distributions_all.po_distribution_id',
+        'itemacct.deliverylocdatekey',
+        'header.dockey',
+        'itemacct.itemacctkey',
+        'po_headers_all.po_header_id',
+        'po_lines_all.po_line_id'
+    ]
 
+    #reduce the joined data to fields needed for the data act schema
+    #jp_merge = jp_merge.drop_duplicates()
+    jp_merge = jp_merge.reset_index(drop=True)
+    data_act = jp_merge.drop_duplicates(data_act_cols)
+    data_act = data_act[data_act_cols]
+    '''
+    data_act = jp_merge[[
+        'po_headers_all.segment1', #award id
+        'header.versionnum', #award modification
+        'header.docnum',
+        'header.verkey',
+        'header.amount', #current total value of award/potential total value of award
+        'header.awardtype', #type of award
+        'header.primarysiccode', #naics code
+        'header.awarddate', #action date
+        'header.issuingdocaddresskey', #awarding office code
+        'grantheader.sba1222countyname', #recipient county name
+        'grantheader.sba1222countycode', #recipient county code
+        'grantheader.recipientcountrycode', #awardee/recipient legal business country code
+        'grantheader.recipientcountryname', #awardee/recipient legal business country name
+        'grantheader.sba1222congdistno', #place of performance congressional district
+        'grantheader.sba1222personalservicenf', #used for non-fed funding amt calculation
+        'grantheader.sba1222fringebenefitsnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222consultantsnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222travelnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222equipmentnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222suppliesnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222contractualnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222othernf', #used for non-fed funding amt calculation
+        'grantheader.sba1222indcostnf', #used for non-fed funding amt calculation
+        'grantheader.sba1222othercostnf', #used for non-fed funding amt calculation
+        'po_lines_all.item_description', #award description
+        'po_lines_all.quantity',
+        'po_lines_all.unit_price',
+        'po_distributions_all.attribute10', #period of performance start date
+        'po_distributions_all.attribute11', #period of performance end date
+        'po_distributions_all.quantity_billed', #outlay
+        'docvendor.name', #Recipient name
+        'docvendor.duns', #awardee/recipient legal business DUNS
+        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
+        'docvendor.address1', #awardee/recipient legal business street address line 1
+        'docvendor.address2', #awardee/recipient legal busines street address line 2
+        'docvendor.address3', #awardee/recipient legal business street address line 3
+        'docvendor.city', #awardee/recipient legal business city
+        'docvendor.state', #awardee/recipient state
+        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
+        'docaddr.name', #awarding office name
+        #'fv_treasury_symbols.treasury_symbol', #TAS
+        'funding_agency_name', #funding agency name
+        'funding_agency_code', #funding agency code
+        'funding_sub_tier_agency_name', #funding sub-tier agency name
+        'funding_sub_tier_agency_code', #funding sub-tier agency code
+        'po_distributions_all.attribute_category', #type of award code
+        'header.obligatedamt', #amount of ba appropriated; obligation
+        'gl_code_combinations.segment3', #funding office name
+        'gl_code_combinations.segment4', #program activity
+        'gl_code_combinations.segment5', #object class woo!
+        'itemacct.acctfield3', #funding office name and funding office code
+        'itemacct.acctfield6', #appropriations account
+        'itemacct.tas#', #TAS
+        #'itemacct.acctfield4', #program activity
+        'faadsciv.recordtype', #record type
+        'faadsciv.assistancetranstype', #type of transaction code
+        'faadsciv.countycityname', #primary place of performance county name/primary place of performance city
+        'faadsciv.countycitycode', #primary place of performance county code
+        'faadsciv.principalstatecode', #primary place of performance state code
+        'faadsciv.principalstatename', #primary place of performance state name
+        'faadsciv.placeofperfzip', #primary place of performance zip code + 4
+        'faadsciv.placeofperfcountrycode', #primary location of performance country code
+        'faadsciv.placeofperfcountryname', #primary location of performance country name
+        'faadsciv.cfdaprogramnumber', #cfda program number
+        'faadsciv.cfdaprogramtitle', #cfda program title
+        'faadsciv.recipienttype', #recipient type
+        'funding_agency_name',
+        'funding_agency_code',
+        'funding_sub_tier_agency_name',
+        'funding_sub_tier_agency_code',
+        'awarding_agency_name',
+        'awarding_agency_code',
+        'awarding_sub_tier_agency_name',
+        'awarding_sub_tier_agency_code',
+        #add some keys to the file for reference
+        'po_distributions_all.po_distribution_id',
+        'itemacct.deliverylocdatekey',
+        'header.dockey',
+        'itemacct.itemacctkey'
+        ]]
+    '''
+    data_act['header.dockeyverkey'] = data_act['header.dockey'].map(str) + data_act['header.verkey'].map(str)
     #write out the data act file
     if not outfile:
         outfile = 'data/data_act.csv'
     data_act.to_csv(outfile, index = False)
     print('DATA Act combined file written to {}'.format(outfile))
 
-run()
+    return data_act
+
+data_act = run()
