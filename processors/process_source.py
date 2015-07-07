@@ -19,7 +19,6 @@ def read_data(data_dir):
                 'SBA122CONGDISTNO': np.object,
                 'RECIPIENTCOUNTRYCODE': np.object,
                 'ASSISTANCETRANSTYPE': np.object,
-                'SEGMENT3': np.object,
                 'PRIMARYSICCODE': np.object,
                 'TAS#': np.object,
                 'SEGMENT1': np.object,
@@ -29,9 +28,23 @@ def read_data(data_dir):
                 'PLACEOFPERFZIP': np.object,
                 'PLACEOFPERFCOUNTRYCODE': np.object,
                 'RECIPIENTTYPE': np.object,
-                'SEGMENT5': np.object,
                 'ACCTFIELD6': np.object,
-                'SEGMENT4': np.object
+                'PO_HEADER_ID': np.object,
+                'PO_LINE_ID': np.object,
+                'PO_DISTRIBUTION_ID': np.object,
+                'CODE_COMBINATION_ID': np.object,
+                'SEGMENT3': np.object,
+                'SEGMENT4': np.object,
+                'SEGMENT5': np.object,
+                'SEGMENT6': np.object,
+                'AE_HEADER_ID': np.object,
+                'AE_LINE_NUM': np.object,
+                'SOURCE_DISTRIBUTION_ID_NUM_1': np.object,
+                'INVOICE_ID': np.object,
+                'LINE_NUMBER': np.object,
+                'INVOICE_LINE_NUMBER': np.object,
+                'INVOICE_DISTRIBUTION_ID': np.object,
+                'DISTRIBUTION_ID': np.object
             }
         )
         rows = len(df_dict[key].index)
@@ -47,8 +60,358 @@ def join_data(df1, df2, key1, key2):
         #key2, len(df2.index), key1, len(df1.index)))
     joined = pd.merge(
         df1, df2, left_on = key1, right_on = key2)
-    #print('Joined rows = {}\n'.format(len(joined.index)))
     return joined
+
+def get_value(row):
+    credit = row['xla_ae_lines.accounted_cr']
+    debit = row['xla_ae_lines.accounted_dr']
+    if pd.isnull(debit):
+        return credit
+    else:
+        return debit * -1
+
+def prep_financial():
+    jaams = read_data('jaams')
+
+    #crosswalk (VERY rough cut) between subledger data and DATA Act elements
+    sgl_crosswalk = pd.read_csv(
+        'data/other/sgl_account_element_crosswalk.csv',
+        dtype = {'code' : np.object}
+    )
+    #create subledger dataframe
+    sgl = join_data(
+        jaams['xla_distribution_links'],
+        jaams['xla_ae_lines'],
+        ['xla_distribution_links.ae_header_id', 'xla_distribution_links.ae_line_num'],
+        ['xla_ae_lines.ae_header_id', 'xla_ae_lines.ae_line_num']
+    )
+    #merge in code combination lookup for SGL account
+    sgl = join_data(
+        sgl,
+        jaams['gl_code_combinations'],
+        ['xla_ae_lines.code_combination_id'],
+        ['gl_code_combinations.code_combination_id']
+    )
+    sgl = sgl.rename(
+        columns = {'gl_code_combinations.segment6' : 'gl_code_combinations.sgl_account'}
+    )
+    sgl = join_data(
+        sgl,
+        sgl_crosswalk,
+        ['gl_code_combinations.sgl_account'],
+        ['sgl_account']
+    )
+    sgl = sgl[['xla_ae_lines.ae_header_id',
+       'xla_ae_lines.ae_line_num',
+       'xla_ae_lines.accounted_dr',
+       'xla_ae_lines.accounted_cr',
+       'xla_distribution_links.source_distribution_id_num_1',
+       'xla_distribution_links.source_distribution_type',
+       'gl_code_combinations.sgl_account',
+        'data_act_element',
+        'code_description']]
+
+    # Create PO dataframe
+    po = pd.DataFrame()
+    po = join_data(
+        jaams['po_headers_all'][['po_headers_all.po_header_id', 'po_headers_all.segment1']],
+        jaams['po_lines_all'][['po_lines_all.po_header_id', 'po_lines_all.po_line_id', 'po_lines_all.item_description', 'po_lines_all.quantity','po_lines_all.unit_price']],
+        ['po_headers_all.po_header_id'],
+        ['po_lines_all.po_header_id']
+        )
+    po = join_data(
+        po,
+        jaams['po_line_locations_all'][['po_line_locations_all.po_line_id']],
+        ['po_lines_all.po_line_id'],
+        ['po_line_locations_all.po_line_id']
+    )
+    po = join_data(
+        po,
+        jaams['po_distributions_all'][['po_distributions_all.po_distribution_id', 'po_distributions_all.po_header_id', 'po_distributions_all.po_line_id', 'po_distributions_all.code_combination_id', 'po_distributions_all.attribute10','po_distributions_all.attribute11', 'po_distributions_all.attribute_category', 'po_distributions_all.quantity_billed', 'po_distributions_all.req_distribution_id']],
+        ['po_lines_all.po_line_id'],
+        ['po_distributions_all.po_line_id']
+    )
+    po = join_data(
+        po,
+        jaams['gl_code_combinations'],
+        ['po_distributions_all.code_combination_id'],
+        ['gl_code_combinations.code_combination_id']
+    )
+    po = join_data(
+        po,
+        sgl[sgl['xla_distribution_links.source_distribution_type'] == 'PO_DISTRIBUTIONS_ALL'],
+        ['po_distributions_all.po_distribution_id'],
+        ['xla_distribution_links.source_distribution_id_num_1']
+    )
+    #grab TAS
+    po = join_data(
+        po,
+        jaams['fv_fund_parameters'],
+        ['gl_code_combinations.segment2'],
+        ['fv_fund_parameters.fund_value']
+    )
+    po = join_data(
+        po,
+        jaams['fv_treasury_symbols'],
+        ['fv_fund_parameters.treasury_symbol_id'],
+        ['fv_treasury_symbols.treasury_symbol_id']
+    )
+
+    #tidy up
+    po = po[['po_headers_all.po_header_id',
+        'po_lines_all.po_line_id',
+        'po_distributions_all.po_distribution_id',
+        'po_distributions_all.req_distribution_id',
+        'po_headers_all.segment1', #award number
+        'po_lines_all.item_description',
+        'po_lines_all.quantity',
+        'po_lines_all.unit_price',
+        'po_distributions_all.quantity_billed',
+        'po_distributions_all.code_combination_id',
+        'po_distributions_all.attribute10', #period of performance start dt
+        'po_distributions_all.attribute11', #period of performance end dt
+        'gl_code_combinations.segment3', #funding office
+        'gl_code_combinations.segment4', #program activity
+        'gl_code_combinations.segment5', #object class
+        'fv_treasury_symbols.treasury_symbol', #tas
+        'xla_ae_lines.ae_header_id',
+        'xla_ae_lines.ae_line_num',
+        'xla_ae_lines.accounted_dr',
+        'xla_ae_lines.accounted_cr',
+        'gl_code_combinations.sgl_account',
+        'data_act_element',
+        'code_description'
+        ]]
+    po['tas'] = po['fv_treasury_symbols.treasury_symbol'].str[:2] + po['fv_treasury_symbols.treasury_symbol'].str[-4:]
+
+    #combine debits and credits into a single columns
+    po['xla_ae_lines.accounted_amt'] = po.apply(lambda row: get_value(row),axis=1)
+
+    #aggregate
+    po_agg = pd.pivot_table(po,
+        index=['po_headers_all.po_header_id',
+        'po_lines_all.po_line_id',
+        'po_distributions_all.po_distribution_id',
+        'po_distributions_all.req_distribution_id',
+        'po_headers_all.segment1',
+        'po_lines_all.item_description',
+        'xla_ae_lines.ae_header_id',
+        'xla_ae_lines.ae_line_num',
+        'po_distributions_all.attribute10', #period of performance start dt
+        'po_distributions_all.attribute11', #period of performance end dt
+        'gl_code_combinations.segment3', #funding office
+        'gl_code_combinations.segment4', #program activity
+        'gl_code_combinations.segment5',
+        'fv_treasury_symbols.treasury_symbol',
+        'tas'],
+        columns = ['data_act_element'],
+        values = ['xla_ae_lines.accounted_amt']
+    )
+    po_agg = po_agg.groupby(
+        level=['po_headers_all.po_header_id',
+        'po_lines_all.po_line_id',
+        'po_distributions_all.po_distribution_id',
+        'po_distributions_all.req_distribution_id',
+        'po_headers_all.segment1',
+        'po_lines_all.item_description',
+        'po_distributions_all.attribute10', #period of performance start dt
+        'po_distributions_all.attribute11', #period of performance end dt
+        'gl_code_combinations.segment3', #funding office
+        'gl_code_combinations.segment4', #program activity
+        'gl_code_combinations.segment5',
+        'fv_treasury_symbols.treasury_symbol',
+        'tas']
+    ).sum()
+    po_agg.columns = po_agg.columns.get_level_values(1)
+
+    # create invoice distributions dataframe
+    invd = join_data(
+        jaams['ap_invoice_distributions_all'],
+        sgl[sgl['xla_distribution_links.source_distribution_type'] == 'AP_INV_DIST'],
+        ['ap_invoice_distributions_all.invoice_distribution_id'],
+        ['xla_distribution_links.source_distribution_id_num_1']
+    )
+
+    #tidy up
+    invd = invd[[
+        'ap_invoice_distributions_all.po_distribution_id',
+        'xla_ae_lines.ae_header_id',
+        'xla_ae_lines.ae_line_num',
+        'xla_ae_lines.accounted_dr',
+        'xla_ae_lines.accounted_cr',
+        'data_act_element'
+        ]]
+
+    #combine debits and credits into a single columns
+    invd['xla_ae_lines.accounted_amt'] = invd.apply(lambda row: get_value(row),axis=1)
+
+    #aggregate
+    invd_agg = pd.pivot_table(invd,
+        index=[
+            'ap_invoice_distributions_all.po_distribution_id',
+            'xla_ae_lines.ae_header_id',
+            'xla_ae_lines.ae_line_num',
+        ],
+        columns = ['data_act_element'],
+        values = ['xla_ae_lines.accounted_amt']
+    )
+    invd_agg = invd_agg.groupby(
+        level=['ap_invoice_distributions_all.po_distribution_id']
+        ).sum()
+    invd_agg.columns = invd_agg.columns.get_level_values(1)
+    invd_agg.reset_index(inplace = True)
+    po_agg.reset_index(inplace = True)
+
+    # join this to po distributions
+    po_agg = pd.merge(
+        po_agg,
+        invd_agg,
+        left_on = 'po_distributions_all.po_distribution_id',
+        right_on = 'ap_invoice_distributions_all.po_distribution_id',
+        how = 'left',
+        suffixes = ('_po', '_inv')
+    )
+
+    # math!
+    po_agg['obligated_amt'] = po_agg['account_obligation_amt_po'] + po_agg['account_obligation_amt_inv']
+    po_agg = po_agg.rename(columns = {'account_outlay_amt' : 'outlay_amt'})
+    #po_agg.drop(po_agg.columns[[10,11,12,13]],axis = 1, inplace = True)
+    return po_agg
+
+def prep_awards():
+    prism = read_data('prism')
+
+    award_merge = join_data(
+        prism['header'],
+        prism['grantheader'],
+        ['header.dockey', 'header.verkey'],
+        ['grantheader.dockey', 'grantheader.verkey']
+    )
+
+    award_merge = join_data(
+        award_merge,
+        prism['docvendor'],
+        ['header.dockey', 'header.verkey'],
+        ['docvendor.dockey', 'docvendor.verkey']
+    )
+
+    award_merge = join_data(
+        award_merge, prism['item'],
+        ['header.dockey', 'header.verkey'],
+        ['item.hdrdockey', 'item.hdrverkey']
+    )
+
+    award_merge = join_data(
+        award_merge, prism['deliverylocdate'],
+        ['item.dockey', 'item.verkey'],
+        ['deliverylocdate.dockey', 'deliverylocdate.verkey'])
+
+    award_merge = join_data(
+        award_merge, prism['itemacct'],
+        ['deliverylocdate.deliverylocdatekey'],
+        ['itemacct.deliverylocdatekey']
+    )
+
+    award_merge= pd.merge(
+        award_merge, prism['naicssicdata'],
+        left_on = 'header.primarysiccode',
+        right_on = 'naicssicdata.naics',
+        how = 'left' #left join b/c NAICS not applicable to grants
+    )
+
+    award_merge = join_data(
+        award_merge, prism['association'],
+        ['header.dockey', 'header.verkey'],
+        ['association.dockey', 'association.verkey']
+    )
+
+    award_merge = join_data(
+        award_merge, prism['faadsciv'],
+        ['association.assocdockey', 'association.assocverkey'],
+        ['faadsciv.dockey', 'faadsciv.verkey']
+    )
+
+    award_merge = join_data(
+        award_merge, prism['docaddr'],
+        ['header.issuingdocaddresskey'],
+        ['docaddr.docaddrkey'])
+
+    #hard-coded agency values
+    award_merge['funding_agency_name'] = 'Small Business Administration'
+    award_merge['funding_agency_code'] = '73'
+    award_merge['funding_sub_tier_agency_name'] = 'Small Business Administration'
+    award_merge['funding_sub_tier_agency_code'] = '73'
+    award_merge['awarding_agency_name'] = 'Small Business Administration'
+    award_merge['awarding_agency_code'] = '73'
+    award_merge['awarding_sub_tier_agency_name'] = 'Small Business Administration'
+    award_merge['awarding_sub_tier_agency_code'] = '73'
+
+    #a list of the columns that should be in the final file
+    award_cols = [
+        'header.docnum', #award id
+        'header.versionnum', #award modification
+        'header.dockey',
+        'header.verkey',
+        'header.amount', #current total value of award/potential total value of award
+        'header.awardtype', #type of award
+        'header.primarysiccode', #naics code
+        'header.awarddate', #action date
+        'header.issuingdocaddresskey', #awarding office code
+        'header.obligatedamt', #obligation
+        'grantheader.sba1222countyname', #recipient county name
+        'grantheader.sba1222countycode', #recipient county code
+        'grantheader.recipientcountrycode', #awardee/recipient legal business country code
+        'grantheader.recipientcountryname', #awardee/recipient legal business country name
+        'grantheader.sba1222congdistno', #place of performance congressional district
+        'docvendor.name', #Recipient name
+        'docvendor.duns', #awardee/recipient legal business DUNS
+        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
+        'docvendor.address1', #awardee/recipient legal business street address line 1
+        'docvendor.address2', #awardee/recipient legal busines street address line 2
+        'docvendor.address3', #awardee/recipient legal business street address line 3
+        'docvendor.city', #awardee/recipient legal business city
+        'docvendor.state', #awardee/recipient state
+        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
+        'docaddr.name', #awarding office name
+        'funding_agency_name', #funding agency name
+        'funding_agency_code', #funding agency code
+        'funding_sub_tier_agency_name', #funding sub-tier agency name
+        'funding_sub_tier_agency_code', #funding sub-tier agency code
+        'itemacct.acctfield3', #funding office name and funding office code
+        'itemacct.acctfield4', #program activity
+        'itemacct.acctfield5', #object class
+        'itemacct.acctfield6', #appropriations account
+        'itemacct.tas#', #TAS
+        'faadsciv.recordtype', #record type
+        'faadsciv.assistancetranstype', #type of transaction code
+        'faadsciv.countycityname', #primary place of performance county name/primary place of performance city
+        'faadsciv.countycitycode', #primary place of performance county code
+        'faadsciv.principalstatecode', #primary place of performance state code
+        'faadsciv.principalstatename', #primary place of performance state name
+        'faadsciv.placeofperfzip', #primary place of performance zip code + 4
+        'faadsciv.placeofperfcountrycode', #primary location of performance country code
+        'faadsciv.placeofperfcountryname', #primary location of performance country name
+        'faadsciv.cfdaprogramnumber', #cfda program number
+        'faadsciv.cfdaprogramtitle', #cfda program title
+        'faadsciv.recipienttype', #recipient type
+        'funding_agency_name',
+        'funding_agency_code',
+        'funding_sub_tier_agency_name',
+        'funding_sub_tier_agency_code',
+        'awarding_agency_name',
+        'awarding_agency_code',
+        'awarding_sub_tier_agency_name',
+        'awarding_sub_tier_agency_code',
+        #add some keys to the file for reference
+        'itemacct.deliverylocdatekey',
+        'itemacct.itemacctkey'
+    ]
+
+    award_merge = award_merge.reset_index(drop=True)
+    award = award_merge.drop_duplicates(award_cols)
+    award = award[award_cols]
+    award['header.dockeyverkey'] = award['header.dockey'].map(str) + award['header.verkey'].map(str)
+    return award
 
 def run():
 
@@ -58,303 +421,19 @@ def run():
     args = parser.parse_args()
     outfile = args.outfile
 
-    jp_merge = pd.DataFrame
-    jaams = read_data('jaams')
-    prism = read_data('prism')
+    awards = prep_awards()
+    awards.to_csv('data/data_act_award_details.csv', index = False)
+    financial = prep_financial()
+    financial.to_csv('data/data_act_financial_details.csv', index = False)
 
-    #join prism award numbers to jaams award numbers
-    print('\nUnique award numbers in JAAMS po_headers_all: {}'.format(
-        len(jaams['po_headers_all']['po_headers_all.segment1'])))
-    jp_merge = join_data(
-            jaams['po_headers_all'],
-            prism['header'],
-            ['po_headers_all.segment1'],
-            ['header.docnum'])
+    #join to get some rough combined test data
+    #(this will be replaced by SBA's code)
 
-    jp_merge = join_data(
-        jp_merge,
-        prism['grantheader'],
-        ['header.dockey', 'header.verkey'],
-        ['grantheader.dockey', 'grantheader.verkey']
-    )
-
-    jp_merge = join_data(
-        jp_merge,
-        prism['docvendor'],
-        ['header.dockey', 'header.verkey'],
-        ['docvendor.dockey', 'docvendor.verkey']
-    )
-
-    jp_merge = join_data(
-        jp_merge, prism['item'],
-        ['header.dockey', 'header.verkey'],
-        ['item.hdrdockey', 'item.hdrverkey']
-    )
-
-    jp_merge = join_data(
-        jp_merge, prism['deliverylocdate'],
-        ['item.dockey', 'item.verkey'],
-        ['deliverylocdate.dockey', 'deliverylocdate.verkey'])
-
-    jp_merge = join_data(
-        jp_merge, prism['itemacct'],
-        ['deliverylocdate.deliverylocdatekey'],
-        ['itemacct.deliverylocdatekey']
-    )
-
-    jp_merge= pd.merge(
-        jp_merge, prism['naicssicdata'],
-        left_on = 'header.primarysiccode',
-        right_on = 'naicssicdata.naics',
-        how = 'left' #left join b/c NAICS not always applicable?
-    )
-
-    jp_merge = join_data(
-        jp_merge, jaams['ap_supplier_sites_all'],
-        ['po_headers_all.vendor_id', 'po_headers_all.vendor_site_id'],
-        ['ap_supplier_sites_all.vendor_id', 'ap_supplier_sites_all.vendor_site_id']
-    )
-
-    jp_merge = join_data(
-        jp_merge, jaams['po_lines_all'],
-        ['po_headers_all.po_header_id'],
-        ['po_lines_all.po_header_id']
-    )
-
-    jp_merge = join_data(
-        jp_merge, jaams['po_line_locations_all'],
-        ['po_lines_all.po_line_id'],
-        ['po_line_locations_all.po_line_id']
-    )
-
-    jp_merge = join_data(
-        jp_merge, jaams['po_distributions_all'],
-        ['po_line_locations_all.po_line_id'],
-        ['po_distributions_all.po_line_id']
-    )
-
-    jp_merge = join_data(
-        jp_merge, jaams['gl_code_combinations'],
-        'po_distributions_all.code_combination_id',
-        'gl_code_combinations.code_combination_id'
-    )
-
-    fv_fund_parameters = jaams['fv_fund_parameters']
-    fv_treasury_symbols = jaams['fv_treasury_symbols']
-    jp_merge = pd.merge(
-        pd.merge(fv_fund_parameters, fv_treasury_symbols,
-        left_on = 'fv_fund_parameters.treasury_symbol_id',
-        right_on = 'fv_treasury_symbols.treasury_symbol_id'),
-        jp_merge,
-        left_on = 'fv_fund_parameters.fund_value',
-        right_on = 'gl_code_combinations.segment2'
-    )
-
-    jp_merge = join_data(
-        jp_merge, prism['association'],
-        ['header.dockey', 'header.verkey'],
-        ['association.dockey', 'association.verkey']
-    )
-    #then use Association as the crosswalk
-    jp_merge = join_data(
-        jp_merge, prism['faadsciv'],
-        ['association.assocdockey', 'association.assocverkey'],
-        ['faadsciv.dockey', 'faadsciv.verkey']
-    )
-
-    jp_merge = join_data(
-        jp_merge, prism['docaddr'],
-        ['header.issuingdocaddresskey'],
-        ['docaddr.docaddrkey'])
-
-    #hard-coded agency values
-    jp_merge['funding_agency_name'] = 'Small Business Administration'
-    jp_merge['funding_agency_code'] = '73'
-    jp_merge['funding_sub_tier_agency_name'] = 'Small Business Administration'
-    jp_merge['funding_sub_tier_agency_code'] = '73'
-    jp_merge['awarding_agency_name'] = 'Small Business Administration'
-    jp_merge['awarding_agency_code'] = '73'
-    jp_merge['awarding_sub_tier_agency_name'] = 'Small Business Administration'
-    jp_merge['awarding_sub_tier_agency_code'] = '73'
-
-    #a list of the columns that should be in the final file
-    data_act_cols = [
-        'po_headers_all.segment1', #award id
-        'header.versionnum', #award modification
-        'header.docnum',
-        'header.verkey',
-        'header.amount', #current total value of award/potential total value of award
-        'header.awardtype', #type of award
-        'header.primarysiccode', #naics code
-        'header.awarddate', #action date
-        'header.issuingdocaddresskey', #awarding office code
-        'grantheader.sba1222countyname', #recipient county name
-        'grantheader.sba1222countycode', #recipient county code
-        'grantheader.recipientcountrycode', #awardee/recipient legal business country code
-        'grantheader.recipientcountryname', #awardee/recipient legal business country name
-        'grantheader.sba1222congdistno', #place of performance congressional district
-        'grantheader.sba1222personalservicenf', #used for non-fed funding amt calculation
-        'grantheader.sba1222fringebenefitsnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222consultantsnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222travelnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222equipmentnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222suppliesnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222contractualnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222othernf', #used for non-fed funding amt calculation
-        'grantheader.sba1222indcostnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222othercostnf', #used for non-fed funding amt calculation
-        'po_lines_all.item_description', #award description
-        'po_lines_all.quantity',
-        'po_lines_all.unit_price',
-        'po_distributions_all.attribute10', #period of performance start date
-        'po_distributions_all.attribute11', #period of performance end date
-        'po_distributions_all.quantity_billed', #outlay
-        'docvendor.name', #Recipient name
-        'docvendor.duns', #awardee/recipient legal business DUNS
-        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
-        'docvendor.address1', #awardee/recipient legal business street address line 1
-        'docvendor.address2', #awardee/recipient legal busines street address line 2
-        'docvendor.address3', #awardee/recipient legal business street address line 3
-        'docvendor.city', #awardee/recipient legal business city
-        'docvendor.state', #awardee/recipient state
-        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
-        'docaddr.name', #awarding office name
-        #'fv_treasury_symbols.treasury_symbol', #TAS
-        'funding_agency_name', #funding agency name
-        'funding_agency_code', #funding agency code
-        'funding_sub_tier_agency_name', #funding sub-tier agency name
-        'funding_sub_tier_agency_code', #funding sub-tier agency code
-        'po_distributions_all.attribute_category', #type of award code
-        'header.obligatedamt', #amount of ba appropriated; obligation
-        'gl_code_combinations.segment3', #funding office name
-        'gl_code_combinations.segment4', #program activity
-        'gl_code_combinations.segment5', #object class woo!
-        'itemacct.acctfield3', #funding office name and funding office code
-        'itemacct.acctfield6', #appropriations account
-        'itemacct.tas#', #TAS
-        #'itemacct.acctfield4', #program activity
-        'faadsciv.recordtype', #record type
-        'faadsciv.assistancetranstype', #type of transaction code
-        'faadsciv.countycityname', #primary place of performance county name/primary place of performance city
-        'faadsciv.countycitycode', #primary place of performance county code
-        'faadsciv.principalstatecode', #primary place of performance state code
-        'faadsciv.principalstatename', #primary place of performance state name
-        'faadsciv.placeofperfzip', #primary place of performance zip code + 4
-        'faadsciv.placeofperfcountrycode', #primary location of performance country code
-        'faadsciv.placeofperfcountryname', #primary location of performance country name
-        'faadsciv.cfdaprogramnumber', #cfda program number
-        'faadsciv.cfdaprogramtitle', #cfda program title
-        'faadsciv.recipienttype', #recipient type
-        'funding_agency_name',
-        'funding_agency_code',
-        'funding_sub_tier_agency_name',
-        'funding_sub_tier_agency_code',
-        'awarding_agency_name',
-        'awarding_agency_code',
-        'awarding_sub_tier_agency_name',
-        'awarding_sub_tier_agency_code',
-        #add some keys to the file for reference
-        'po_distributions_all.po_distribution_id',
-        'itemacct.deliverylocdatekey',
-        'header.dockey',
-        'itemacct.itemacctkey',
-        'po_headers_all.po_header_id',
-        'po_lines_all.po_line_id'
-    ]
-
-    #reduce the joined data to fields needed for the data act schema
-    #jp_merge = jp_merge.drop_duplicates()
-    jp_merge = jp_merge.reset_index(drop=True)
-    data_act = jp_merge.drop_duplicates(data_act_cols)
-    data_act = data_act[data_act_cols]
-    '''
-    data_act = jp_merge[[
-        'po_headers_all.segment1', #award id
-        'header.versionnum', #award modification
-        'header.docnum',
-        'header.verkey',
-        'header.amount', #current total value of award/potential total value of award
-        'header.awardtype', #type of award
-        'header.primarysiccode', #naics code
-        'header.awarddate', #action date
-        'header.issuingdocaddresskey', #awarding office code
-        'grantheader.sba1222countyname', #recipient county name
-        'grantheader.sba1222countycode', #recipient county code
-        'grantheader.recipientcountrycode', #awardee/recipient legal business country code
-        'grantheader.recipientcountryname', #awardee/recipient legal business country name
-        'grantheader.sba1222congdistno', #place of performance congressional district
-        'grantheader.sba1222personalservicenf', #used for non-fed funding amt calculation
-        'grantheader.sba1222fringebenefitsnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222consultantsnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222travelnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222equipmentnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222suppliesnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222contractualnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222othernf', #used for non-fed funding amt calculation
-        'grantheader.sba1222indcostnf', #used for non-fed funding amt calculation
-        'grantheader.sba1222othercostnf', #used for non-fed funding amt calculation
-        'po_lines_all.item_description', #award description
-        'po_lines_all.quantity',
-        'po_lines_all.unit_price',
-        'po_distributions_all.attribute10', #period of performance start date
-        'po_distributions_all.attribute11', #period of performance end date
-        'po_distributions_all.quantity_billed', #outlay
-        'docvendor.name', #Recipient name
-        'docvendor.duns', #awardee/recipient legal business DUNS
-        'docvendor.dunsplus4', #awardee/recipient legal business DUNS+4
-        'docvendor.address1', #awardee/recipient legal business street address line 1
-        'docvendor.address2', #awardee/recipient legal busines street address line 2
-        'docvendor.address3', #awardee/recipient legal business street address line 3
-        'docvendor.city', #awardee/recipient legal business city
-        'docvendor.state', #awardee/recipient state
-        'docvendor.zip', #awardee/recipient us zip code + 4; awardee/recipient postal code
-        'docaddr.name', #awarding office name
-        #'fv_treasury_symbols.treasury_symbol', #TAS
-        'funding_agency_name', #funding agency name
-        'funding_agency_code', #funding agency code
-        'funding_sub_tier_agency_name', #funding sub-tier agency name
-        'funding_sub_tier_agency_code', #funding sub-tier agency code
-        'po_distributions_all.attribute_category', #type of award code
-        'header.obligatedamt', #amount of ba appropriated; obligation
-        'gl_code_combinations.segment3', #funding office name
-        'gl_code_combinations.segment4', #program activity
-        'gl_code_combinations.segment5', #object class woo!
-        'itemacct.acctfield3', #funding office name and funding office code
-        'itemacct.acctfield6', #appropriations account
-        'itemacct.tas#', #TAS
-        #'itemacct.acctfield4', #program activity
-        'faadsciv.recordtype', #record type
-        'faadsciv.assistancetranstype', #type of transaction code
-        'faadsciv.countycityname', #primary place of performance county name/primary place of performance city
-        'faadsciv.countycitycode', #primary place of performance county code
-        'faadsciv.principalstatecode', #primary place of performance state code
-        'faadsciv.principalstatename', #primary place of performance state name
-        'faadsciv.placeofperfzip', #primary place of performance zip code + 4
-        'faadsciv.placeofperfcountrycode', #primary location of performance country code
-        'faadsciv.placeofperfcountryname', #primary location of performance country name
-        'faadsciv.cfdaprogramnumber', #cfda program number
-        'faadsciv.cfdaprogramtitle', #cfda program title
-        'faadsciv.recipienttype', #recipient type
-        'funding_agency_name',
-        'funding_agency_code',
-        'funding_sub_tier_agency_name',
-        'funding_sub_tier_agency_code',
-        'awarding_agency_name',
-        'awarding_agency_code',
-        'awarding_sub_tier_agency_name',
-        'awarding_sub_tier_agency_code',
-        #add some keys to the file for reference
-        'po_distributions_all.po_distribution_id',
-        'itemacct.deliverylocdatekey',
-        'header.dockey',
-        'itemacct.itemacctkey'
-        ]]
-    '''
-    data_act['header.dockeyverkey'] = data_act['header.dockey'].map(str) + data_act['header.verkey'].map(str)
-    #write out the data act file
+    data_act = awards
+    #write files
     if not outfile:
         outfile = 'data/data_act.csv'
-    data_act.to_csv(outfile, index = False)
+    #data_act.to_csv(outfile, index = False)
     print('DATA Act combined file written to {}'.format(outfile))
 
     return data_act
