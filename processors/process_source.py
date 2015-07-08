@@ -446,7 +446,7 @@ def join_awards_financial(awards, financial):
     # pull in some TAS-level info to simulate those numbers
     # (pulled these from the budget appendix as a stand-in)
     tas = pd.read_csv(
-        'data/sba_tas_fy2014_summary.csv',
+        'data/other/sba_tas_fy2014_summary.csv',
         usecols = ['tas', 'acct_ba_appropriated',
             'acct_other_budgetary_resources',
             'acct_total_budgetary_resources'],
